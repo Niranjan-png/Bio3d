@@ -1,0 +1,11 @@
+{
+    "name": "biopilot-3d-lab",
+    "private": true,
+    "version": "0.1.0",
+    "packageManager": "pnpm@10.23.0",
+    "scripts": {
+        "dev:web": "pnpm --filter @biopilot/web dev",
+        "build:web": "pnpm --filter @biopilot/web build",
+        "start:web": "pnpm --filter @biopilot/web start"
+    }
+}

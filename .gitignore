@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+.next/
+dist/
+coverage/
+
+# Python environments and test artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
