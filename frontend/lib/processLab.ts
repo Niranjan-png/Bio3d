@@ -10,7 +10,7 @@
  * Documents simplifications and conventions.
  */
 
-import { type Polymer, parseSequence, complement } from "./helix";
+import { type Polymer, complement } from "./helix.ts";
 
 /** Standard genetic code mapping codon -> amino acid (single letter) */
 export const GENETIC_CODE: Record<string, string> = {
@@ -127,6 +127,23 @@ export interface ProcessLabState {
   readonly selectedFrame: number;
 }
 
+const safeRequestAnimationFrame = (callback: () => void): number => {
+  if (typeof requestAnimationFrame !== "undefined") {
+    return requestAnimationFrame(callback);
+  }
+  return setTimeout(callback, 16) as unknown as number;
+};
+
+const safeCancelAnimationFrame = (id: number): void => {
+  if (typeof cancelAnimationFrame !== "undefined") {
+    cancelAnimationFrame(id);
+  } else {
+    clearTimeout(id as unknown as NodeJS.Timeout);
+  }
+};
+
+export type TimelineListener = (state: ProcessLabState) => void;
+
 /** Deterministic event generator for DNA processes */
 export class DeterministicProcessTimeline {
   private config: ProcessLabConfig;
@@ -136,10 +153,25 @@ export class DeterministicProcessTimeline {
   private lastUpdateTime: number = 0;
   private readonly eventDuration: number = 2000; // ms per event
   private readonly stepDuration: number = 500; // ms per manual step
+  private listeners: Set<TimelineListener> = new Set();
 
   constructor(config: ProcessLabConfig) {
     this.config = config;
     this.state = this.initializeState();
+  }
+
+  public subscribe(listener: TimelineListener): () => void {
+    this.listeners.add(listener);
+    listener(this.state);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notifyListeners(): void {
+    for (const listener of this.listeners) {
+      listener(this.state);
+    }
   }
 
   private initializeState(): ProcessLabState {
@@ -202,6 +234,7 @@ export class DeterministicProcessTimeline {
       });
     }
 
+    timestamp += this.eventDuration;
     events.push({
       index: events.length,
       type: "replication_complete",
@@ -217,10 +250,11 @@ export class DeterministicProcessTimeline {
     });
 
     // Transcription events
+    timestamp += this.eventDuration;
     events.push({
       index: events.length,
       type: "transcription_start",
-      timestamp: timestamp + this.eventDuration,
+      timestamp,
       state: {
         transcription: {
           template: newStrand,
@@ -257,6 +291,7 @@ export class DeterministicProcessTimeline {
       });
     }
 
+    timestamp += this.eventDuration;
     events.push({
       index: events.length,
       type: "transcription_complete",
@@ -272,10 +307,11 @@ export class DeterministicProcessTimeline {
     });
 
     // Translation events
+    timestamp += this.eventDuration;
     events.push({
       index: events.length,
       type: "translation_start",
-      timestamp: timestamp + this.eventDuration,
+      timestamp,
       state: {
         translation: {
           mrna: rnaSequence,
@@ -291,6 +327,7 @@ export class DeterministicProcessTimeline {
     const codons: string[] = [];
     const peptides: string[] = [];
     const frame = this.config.frame ?? 0;
+    let hitStopCodon = false;
 
     for (let i = frame; i <= rnaSequence.length - 3; i += 3) {
       timestamp += this.eventDuration;
@@ -298,7 +335,7 @@ export class DeterministicProcessTimeline {
       codons.push(codon);
       const aminoAcid = GENETIC_CODE[codon] || "X";
       peptides.push(aminoAcid);
-      const progress = i / (rnaSequence.length - 2);
+      const progress = i / Math.max(1, rnaSequence.length - 2);
 
       events.push({
         index: events.length,
@@ -307,8 +344,8 @@ export class DeterministicProcessTimeline {
         state: {
           translation: {
             mrna: rnaSequence,
-            codons,
-            peptides,
+            codons: [...codons],
+            peptides: [...peptides],
             ribosomePosition: i,
             progress,
           },
@@ -317,15 +354,17 @@ export class DeterministicProcessTimeline {
       });
 
       if (aminoAcid === "*") {
+        hitStopCodon = true;
+        timestamp += this.eventDuration;
         events.push({
           index: events.length,
           type: "translation_complete",
-          timestamp: timestamp + this.eventDuration,
+          timestamp,
           state: {
             translation: {
               mrna: rnaSequence,
-              codons,
-              peptides,
+              codons: [...codons],
+              peptides: [...peptides],
               ribosomePosition: i + 3,
               progress: 1,
             },
@@ -336,7 +375,8 @@ export class DeterministicProcessTimeline {
       }
     }
 
-    if (peptides.length > 0 && peptides[peptides.length - 1] !== "*") {
+    if (!hitStopCodon) {
+      timestamp += this.eventDuration;
       events.push({
         index: events.length,
         type: "translation_complete",
@@ -344,8 +384,8 @@ export class DeterministicProcessTimeline {
         state: {
           translation: {
             mrna: rnaSequence,
-            codons,
-            peptides,
+            codons: [...codons],
+            peptides: [...peptides],
             ribosomePosition: rnaSequence.length,
             progress: 1,
           },
@@ -368,25 +408,50 @@ export class DeterministicProcessTimeline {
 
   public play(): void {
     if (this.state.isPlaying) return;
+    if (this.state.currentEventIndex >= this.state.events.length - 1) {
+      this.state = {
+        ...this.state,
+        currentEventIndex: 0,
+        currentTime: 0,
+      };
+    }
     this.state = { ...this.state, isPlaying: true, isPaused: false };
     this.startTime = performance.now();
     this.lastUpdateTime = this.startTime;
+    this.notifyListeners();
     this.animate();
   }
 
   public pause(): void {
+    if (this.animationId !== null) {
+      safeCancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
     this.state = { ...this.state, isPlaying: false, isPaused: true };
+    this.notifyListeners();
   }
 
   public resume(): void {
-    if (this.state.isPlaying || this.state.isPaused) return;
+    if (this.state.isPlaying) return;
+    if (this.state.currentEventIndex >= this.state.events.length - 1) {
+      this.state = {
+        ...this.state,
+        currentEventIndex: 0,
+        currentTime: 0,
+      };
+    }
     this.state = { ...this.state, isPlaying: true, isPaused: false };
     this.startTime = performance.now();
     this.lastUpdateTime = this.startTime;
+    this.notifyListeners();
     this.animate();
   }
 
   public reset(): void {
+    if (this.animationId !== null) {
+      safeCancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
     this.state = {
       ...this.state,
       currentEventIndex: 0,
@@ -394,38 +459,66 @@ export class DeterministicProcessTimeline {
       isPaused: false,
       currentTime: 0,
     };
+    this.notifyListeners();
   }
 
   public stepForward(): void {
     if (this.state.currentEventIndex < this.state.events.length - 1) {
+      if (this.animationId !== null) {
+        safeCancelAnimationFrame(this.animationId);
+        this.animationId = null;
+      }
+      const nextIndex = this.state.currentEventIndex + 1;
       this.state = {
         ...this.state,
-        currentEventIndex: this.state.currentEventIndex + 1,
-        currentTime: this.state.events[this.state.currentEventIndex + 1].timestamp,
+        isPlaying: false,
+        isPaused: false,
+        currentEventIndex: nextIndex,
+        currentTime: this.state.events[nextIndex].timestamp,
       };
+      this.notifyListeners();
     }
   }
 
   public stepBackward(): void {
     if (this.state.currentEventIndex > 0) {
+      if (this.animationId !== null) {
+        safeCancelAnimationFrame(this.animationId);
+        this.animationId = null;
+      }
+      const prevIndex = this.state.currentEventIndex - 1;
       this.state = {
         ...this.state,
-        currentEventIndex: this.state.currentEventIndex - 1,
-        currentTime: this.state.events[this.state.currentEventIndex - 1].timestamp,
+        isPlaying: false,
+        isPaused: false,
+        currentEventIndex: prevIndex,
+        currentTime: this.state.events[prevIndex].timestamp,
       };
+      this.notifyListeners();
     }
   }
 
   public setSpeed(speed: number): void {
     this.state = { ...this.state, speed: Math.max(0.1, Math.min(5, speed)) };
+    this.notifyListeners();
   }
 
   public setFrame(frame: number): void {
+    if (this.animationId !== null) {
+      safeCancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
     this.config = { ...this.config, frame };
-    this.state = { ...this.state, selectedFrame: frame };
-    // Regenerate events with new frame
-    this.state = { ...this.state, events: this.generateEvents() };
-    this.state = { ...this.state, currentEventIndex: 0, currentTime: 0 };
+    this.state = {
+      ...this.state,
+      selectedFrame: frame,
+      events: this.generateEvents(),
+      currentEventIndex: 0,
+      currentTime: 0,
+      isPlaying: false,
+      isPaused: false,
+    };
+    this.notifyListeners();
   }
 
   private animate(): void {
@@ -438,13 +531,28 @@ export class DeterministicProcessTimeline {
     const deltaTime = (now - this.lastUpdateTime) * this.state.speed;
     this.lastUpdateTime = now;
 
+    const nextTime = this.state.currentTime + deltaTime;
     let nextEventIndex = this.state.currentEventIndex;
-    let nextTime = this.state.currentTime + deltaTime;
 
     // Find next event to advance to
     while (nextEventIndex < this.state.events.length - 1 && 
            nextTime >= this.state.events[nextEventIndex + 1].timestamp) {
       nextEventIndex++;
+    }
+
+    // Check if reached the end of the timeline
+    if (nextEventIndex >= this.state.events.length - 1 && 
+        nextTime >= this.state.events[this.state.events.length - 1].timestamp) {
+      this.state = {
+        ...this.state,
+        currentEventIndex: this.state.events.length - 1,
+        currentTime: this.state.events[this.state.events.length - 1].timestamp,
+        isPlaying: false,
+        isPaused: false,
+      };
+      this.animationId = null;
+      this.notifyListeners();
+      return;
     }
 
     if (nextEventIndex !== this.state.currentEventIndex) {
@@ -453,25 +561,43 @@ export class DeterministicProcessTimeline {
         currentEventIndex: nextEventIndex,
         currentTime: nextTime,
       };
+      this.notifyListeners();
+    } else {
+      this.state = {
+        ...this.state,
+        currentTime: nextTime,
+      };
     }
 
-    this.animationId = requestAnimationFrame(() => this.animate());
+    this.animationId = safeRequestAnimationFrame(() => this.animate());
   }
 
   public cleanup(): void {
     if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId);
+      safeCancelAnimationFrame(this.animationId);
       this.animationId = null;
     }
     this.state = { ...this.state, isPlaying: false, isPaused: false };
+    this.listeners.clear();
   }
 
   public updateConfig(newConfig: Partial<ProcessLabConfig>): void {
     this.config = { ...this.config, ...newConfig };
     // If sequence or frame changed, regenerate events
     if (newConfig.sequence || newConfig.frame !== undefined) {
-      this.state = { ...this.state, events: this.generateEvents() };
-      this.state = { ...this.state, currentEventIndex: 0, currentTime: 0 };
+      if (this.animationId !== null) {
+        safeCancelAnimationFrame(this.animationId);
+        this.animationId = null;
+      }
+      this.state = {
+        ...this.state,
+        events: this.generateEvents(),
+        currentEventIndex: 0,
+        currentTime: 0,
+        isPlaying: false,
+        isPaused: false,
+      };
+      this.notifyListeners();
     }
   }
 }

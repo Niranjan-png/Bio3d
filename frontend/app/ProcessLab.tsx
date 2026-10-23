@@ -39,22 +39,25 @@ export default function ProcessLab({
   const [validation, setValidation] = useState({ valid: true, errors: [] as string[] });
 
   const timelineRef = useRef<DeterministicProcessTimeline | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const lastUpdateRef = useRef<number>(0);
 
-  // Initialize timeline
+  // Initialize timeline and subscribe to state changes
   useEffect(() => {
     const newTimeline = new DeterministicProcessTimeline(config);
     setTimeline(newTimeline);
     timelineRef.current = newTimeline;
     
+    const unsubscribe = newTimeline.subscribe((state) => {
+      setCurrentEventIndex(state.currentEventIndex);
+      setCurrentTime(state.currentTime);
+      setIsPlaying(state.isPlaying);
+      setIsPaused(state.isPaused);
+      setSpeed(state.speed);
+      setSelectedFrame(state.selectedFrame);
+    });
+
     return () => {
-      if (timelineRef.current) {
-        timelineRef.current.cleanup();
-      }
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      unsubscribe();
+      newTimeline.cleanup();
     };
   }, []);
 
@@ -63,70 +66,17 @@ export default function ProcessLab({
     setValidation(ProcessLabUtils.validateSequence(sequence, polymer));
   }, [sequence, polymer]);
 
+  // Sync config when props change
+  useEffect(() => {
+    setConfig(prev => ({ ...prev, sequence, polymer }));
+  }, [sequence, polymer]);
+
   // Update timeline when config changes
   useEffect(() => {
     if (timelineRef.current) {
       timelineRef.current.updateConfig(config);
     }
   }, [config]);
-
-  // Animation loop
-  const animate = useCallback((timestamp: number) => {
-    if (!timelineRef.current || !isPlaying || isPaused) {
-      animationFrameRef.current = requestAnimationFrame(animate);
-      return;
-    }
-
-    const deltaTime = (timestamp - lastUpdateRef.current) * speed;
-    lastUpdateRef.current = timestamp;
-
-    const state = timelineRef.current.getState();
-    let nextEventIndex = state.currentEventIndex;
-    let nextTime = state.currentTime + deltaTime;
-
-    // Find next event to advance to
-    while (nextEventIndex < state.events.length - 1 && 
-           nextTime >= state.events[nextEventIndex + 1].timestamp) {
-      nextEventIndex++;
-    }
-
-    if (nextEventIndex !== state.currentEventIndex) {
-      setCurrentEventIndex(nextEventIndex);
-      setCurrentTime(nextTime);
-    }
-
-    animationFrameRef.current = requestAnimationFrame(animate);
-  }, [isPlaying, isPaused, speed]);
-
-  // Start/stop animation
-  useEffect(() => {
-    if (isPlaying && !isPaused) {
-      lastUpdateRef.current = performance.now();
-      animationFrameRef.current = requestAnimationFrame(animate);
-    } else if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-
-    return () => {
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [isPlaying, isPaused, animate]);
-
-  // Update timeline state from ref
-  useEffect(() => {
-    if (timelineRef.current) {
-      const state = timelineRef.current.getState();
-      setCurrentEventIndex(state.currentEventIndex);
-      setCurrentTime(state.currentTime);
-      setIsPlaying(state.isPlaying);
-      setIsPaused(state.isPaused);
-      setSpeed(state.speed);
-      setSelectedFrame(state.selectedFrame);
-    }
-  }, [timeline]);
 
   const handlePlay = useCallback(() => {
     if (timelineRef.current) {
@@ -174,10 +124,13 @@ export default function ProcessLab({
   const handleFrameChange = useCallback((frame: number) => {
     setSelectedFrame(frame);
     setConfig(prev => ({ ...prev, frame }));
+    if (timelineRef.current) {
+      timelineRef.current.setFrame(frame);
+    }
   }, []);
 
   const currentEvent = timeline?.getState().events[currentEventIndex];
-  const processSummary = currentEvent ? ProcessLabUtils.getProcessSummary([...timeline.getState().events]) : null;
+  const processSummary = currentEvent ? ProcessLabUtils.getProcessSummary(timeline.getState().events as TimelineEvent[]) : null;
 
   return (
     <section className={`process-lab ${className}`} aria-labelledby="process-lab-heading">
@@ -219,7 +172,7 @@ export default function ProcessLab({
               </button>
               <button 
                 onClick={handleReset}
-                disabled={isPlaying || isPaused}
+                disabled={!isPlaying && !isPaused && currentEventIndex === 0}
               >
                 Reset
               </button>
@@ -227,13 +180,13 @@ export default function ProcessLab({
             <div className="navigation-buttons">
               <button 
                 onClick={handleStepBackward}
-                disabled={currentEventIndex === 0}
+                disabled={currentEventIndex === 0 || isPlaying}
               >
                 Step Back
               </button>
               <button 
                 onClick={handleStepForward}
-                disabled={currentEventIndex >= (timeline?.getState().events.length ?? 0) - 1}
+                disabled={currentEventIndex >= (timeline?.getState().events.length ?? 0) - 1 || isPlaying}
               >
                 Step Forward
               </button>
@@ -406,19 +359,19 @@ export default function ProcessLab({
               <div className="summary-grid">
                 <div className="summary-item">
                   <span className="label">Replication:</span>
-                  <span className={`status ${processSummary.replicationComplete ? "complete" : "incomplete"}`">
+                  <span className={`status ${processSummary.replicationComplete ? "complete" : "incomplete"}`}>
                     {processSummary.replicationComplete ? "✓ Complete" : "✗ Incomplete"}
                   </span>
                 </div>
                 <div className="summary-item">
                   <span className="label">Transcription:</span>
-                  <span className={`status ${processSummary.transcriptionComplete ? "complete" : "incomplete"}`">
+                  <span className={`status ${processSummary.transcriptionComplete ? "complete" : "incomplete"}`}>
                     {processSummary.transcriptionComplete ? "✓ Complete" : "✗ Incomplete"}
                   </span>
                 </div>
                 <div className="summary-item">
                   <span className="label">Translation:</span>
-                  <span className={`status ${processSummary.translationComplete ? "complete" : "incomplete"}`">
+                  <span className={`status ${processSummary.translationComplete ? "complete" : "incomplete"}`}>
                     {processSummary.translationComplete ? "✓ Complete" : "✗ Incomplete"}
                   </span>
                 </div>

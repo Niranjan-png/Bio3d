@@ -1,6 +1,6 @@
-# BioPilot 3D Lab — Milestones 2–3
+# BioPilot 3D Lab — Milestones 2–4
 
-A credential-free monorepo for BioPilot 3D Lab. Milestone 2 adds a browser-only 3Dmol.js protein structure viewer and Milestone 3 adds a browser-only Three.js idealized DNA/RNA helix laboratory. Simulation, analysis, reports, trajectories, and agents remain out of scope.
+A credential-free monorepo for BioPilot 3D Lab. Milestone 2 adds a browser-only 3Dmol.js protein structure viewer, Milestone 3 adds a browser-only Three.js idealized DNA/RNA helix laboratory, and Milestone 4 adds a browser-only deterministic process lab for DNA replication, transcription, and translation. Simulation, analysis, reports, trajectories, and agents remain out of scope.
 
 ## Structure viewer
 

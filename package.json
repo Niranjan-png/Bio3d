@@ -6,6 +6,7 @@
     "scripts": {
         "dev:web": "pnpm --filter @biopilot/web dev",
         "build:web": "pnpm --filter @biopilot/web build",
-        "start:web": "pnpm --filter @biopilot/web start"
+        "start:web": "pnpm --filter @biopilot/web start",
+        "test:web": "pnpm --filter @biopilot/web test"
     }
 }
