@@ -657,6 +657,10 @@ export const ProcessLabUtils = {
     if (mode === "combined") return events;
     return events.filter(event => event.type.startsWith(`${mode}_`));
   },
+  getFirstEventForMode(events: readonly TimelineEvent[], mode: ProcessLabMode): TimelineEvent | null {
+    if (mode === "combined") return events[0] ?? null;
+    return events.find(event => event.type.startsWith(`${mode}_`)) ?? null;
+  },
 
   getCurrentEventForMode(events: readonly TimelineEvent[], currentEventIndex: number): TimelineEvent | null {
     let currentEvent: TimelineEvent | null = null;

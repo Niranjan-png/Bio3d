@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./styles.css";
+import "./process-animation.css";
 
 export const metadata: Metadata = {
     title: "BioPilot 3D Lab",

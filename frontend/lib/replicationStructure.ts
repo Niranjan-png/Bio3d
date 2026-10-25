@@ -1,0 +1,15 @@
+export const REPLICATION_STRUCTURE = {
+  id: "6XTX",
+  assembly: "1",
+  dnaAuthChain: "M",
+  mcmAuthChains: ["2", "3", "4", "5", "6", "7"],
+  ginsAuthChains: ["A", "B", "C", "D"],
+  cdc45AuthChain: "E",
+  url: "https://files.rcsb.org/download/6XTX-assembly1.cif",
+  entryUrl: "https://www.rcsb.org/structure/6XTX",
+  citationUrl: "https://doi.org/10.1093/nar/gkaa429",
+  citation: "Rzechorzek et al., Nucleic Acids Research 48, 6980–6995 (2020)",
+  resolution: "3.29 Å cryo-EM",
+  title: "Human CMG helicase bound to fork DNA",
+  dnaDescription: "One modeled synthetic DNA chain; unmodeled fork strands are not shown",
+} as const;

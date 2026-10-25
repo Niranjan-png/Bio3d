@@ -1,0 +1,17 @@
+export const TRANSCRIPTION_STRUCTURE = {
+  id: "5C4X",
+  assembly: "1",
+  url: "https://files.rcsb.org/download/5C4X-assembly1.cif",
+  entryUrl: "https://www.rcsb.org/structure/5C4X",
+  citationUrl: "https://doi.org/10.1016/j.molcel.2015.06.034",
+  citation: "Barnes et al., Molecular Cell 59, 258–269 (2015)",
+  resolution: "4.0 Å X-ray diffraction",
+  title: "Yeast RNA polymerase II transcription complex with complete transcription bubble",
+  rpb1AuthChain: "A",
+  rpb2AuthChain: "B",
+  accessoryProteinAuthChains: ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"],
+  nascentRnaAuthChain: "R",
+  nonTemplateDnaAuthChain: "S",
+  templateDnaAuthChain: "U",
+  nascentRnaLength: 9,
+} as const;

@@ -70,16 +70,29 @@ export default function ProcessLab({
 
   // Update timeline when config changes
   useEffect(() => {
-    if (timelineRef.current) {
-      timelineRef.current.updateConfig(config);
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    currentTimeline.updateConfig(config);
+    if (activeMode === "combined") return;
+    const firstEvent = ProcessLabUtils.getFirstEventForMode(
+      currentTimeline.getState().events,
+      activeMode,
+    );
+    if (firstEvent && currentTimeline.getState().currentEventIndex !== firstEvent.index) {
+      currentTimeline.goToEvent(firstEvent.index);
     }
-  }, [config]);
+  }, [config, activeMode]);
 
   const handlePlay = useCallback(() => {
-    if (timelineRef.current) {
-      timelineRef.current.play();
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    const state = currentTimeline.getState();
+    if (activeMode !== "combined" && state.currentEventIndex >= state.events.length - 1) {
+      const firstEvent = ProcessLabUtils.getFirstEventForMode(state.events, activeMode);
+      if (firstEvent) currentTimeline.goToEvent(firstEvent.index);
     }
-  }, []);
+    currentTimeline.play();
+  }, [activeMode]);
 
   const handlePause = useCallback(() => {
     if (timelineRef.current) {
@@ -94,10 +107,19 @@ export default function ProcessLab({
   }, []);
 
   const handleReset = useCallback(() => {
-    if (timelineRef.current) {
-      timelineRef.current.reset();
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    if (activeMode === "combined") {
+      currentTimeline.reset();
+      return;
     }
-  }, []);
+    const firstEvent = ProcessLabUtils.getFirstEventForMode(
+      currentTimeline.getState().events,
+      activeMode,
+    );
+    if (firstEvent) currentTimeline.goToEvent(firstEvent.index);
+    else currentTimeline.reset();
+  }, [activeMode]);
 
   const handleStepForward = useCallback(() => {
     const currentTimeline = timelineRef.current;
@@ -121,6 +143,18 @@ export default function ProcessLab({
     if (previousEvent) currentTimeline.goToEvent(previousEvent.index);
   }, [activeMode]);
 
+  const handleModeChange = useCallback((nextMode: ProcessLabMode) => {
+    setMode(nextMode);
+    if (nextMode === "combined") return;
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    const firstEvent = ProcessLabUtils.getFirstEventForMode(
+      currentTimeline.getState().events,
+      nextMode,
+    );
+    if (firstEvent) currentTimeline.goToEvent(firstEvent.index);
+  }, []);
+
   const handleSpeedChange = useCallback((newSpeed: number) => {
     setSpeed(newSpeed);
     if (timelineRef.current) {
@@ -133,13 +167,21 @@ export default function ProcessLab({
     setConfig(prev => ({ ...prev, frame }));
     if (timelineRef.current) {
       timelineRef.current.setFrame(frame);
+      if (activeMode !== "combined") {
+        const firstEvent = ProcessLabUtils.getFirstEventForMode(
+          timelineRef.current.getState().events,
+          activeMode,
+        );
+        if (firstEvent) timelineRef.current.goToEvent(firstEvent.index);
+      }
     }
-  }, []);
+  }, [activeMode]);
 
   const allEvents = timeline?.getState().events ?? [];
   const visibleEvents = ProcessLabUtils.getEventsForMode(allEvents, activeMode);
   const currentEvent = ProcessLabUtils.getCurrentEventForMode(visibleEvents, currentEventIndex);
   const currentVisibleIndex = currentEvent ? visibleEvents.findIndex(event => event.index === currentEvent.index) : -1;
+  const modeStartEvent = ProcessLabUtils.getFirstEventForMode(allEvents, activeMode);
   const processSummary = ProcessLabUtils.getProcessSummary(visibleEvents);
 
   return (
@@ -182,7 +224,7 @@ export default function ProcessLab({
               </button>
               <button 
                 onClick={handleReset}
-                disabled={!isPlaying && !isPaused && currentEventIndex === 0}
+                disabled={!isPlaying && !isPaused && currentEventIndex === (modeStartEvent?.index ?? 0)}
               >
                 Reset
               </button>
@@ -251,7 +293,7 @@ export default function ProcessLab({
               ).map(([modeValue, label]) => (
                 <button
                   key={modeValue}
-                  onClick={() => setMode(modeValue)}
+                  onClick={() => handleModeChange(modeValue)}
                   className={activeMode === modeValue ? "active" : ""}
                   disabled={polymer === "RNA" && (modeValue === "replication" || modeValue === "transcription")}
                 >
@@ -291,48 +333,6 @@ export default function ProcessLab({
             currentEventIndex={currentEventIndex}
             currentTime={currentTime}
           />
-
-          <div className="event-timeline">
-            <h3>Event Timeline</h3>
-            <div className="timeline-container">
-              {visibleEvents.map((event, index) => (
-                <div
-                  key={event.index}
-                  className={`timeline-event ${event.index === currentEvent?.index ? "active" : ""} ${event.type}`}
-                >
-                  <div className="event-marker">
-                    <span className="event-index">{index + 1}</span>
-                    <span className="event-type">{event.type.replace("_", " ")}</span>
-                  </div>
-                  <div className="event-content">
-                    <div className="event-explanation">{event.explanation}</div>
-                    {event.state.replication && (
-                      <div className="event-details replication">
-                        <p>Parental: {event.state.replication.parental}</p>
-                        <p>New: {event.state.replication.new}</p>
-                        <p>Progress: {(event.state.replication.progress * 100).toFixed(0)}%</p>
-                      </div>
-                    )}
-                    {event.state.transcription && (
-                      <div className="event-details transcription">
-                        <p>Template: {event.state.transcription.template}</p>
-                        <p>RNA: {event.state.transcription.rna}</p>
-                        <p>Progress: {(event.state.transcription.progress * 100).toFixed(0)}%</p>
-                      </div>
-                    )}
-                    {event.state.translation && (
-                      <div className="event-details translation">
-                        <p>mRNA: {event.state.translation.mrna}</p>
-                        <p>Peptides: {event.state.translation.peptides.join("")}</p>
-                        <p>Ribosome: {event.state.translation.ribosomePosition}</p>
-                        <p>Progress: {(event.state.translation.progress * 100).toFixed(0)}%</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
 
           <div className="current-event-display">
             <h3>Current Event</h3>

@@ -1,6 +1,11 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import { createMolecularVisualProjector, DeterministicProcessTimeline, ProcessLabUtils } from "../lib/processLab.ts";
+import { REPLICATION_STRUCTURE } from "../lib/replicationStructure.ts";
+import { TRANSCRIPTION_STRUCTURE } from "../lib/transcriptionStructure.ts";
+import { getTranslationStructureReadout, RIBOSOME_STRUCTURE } from "../lib/translationStructure.ts";
+import { getProcessAnimationState } from "../lib/processAnimation.ts";
+import { createStructureCoordinateLoader } from "../lib/structureCoordinates.ts";
 import { getProcessLabSequence, parseSequence } from "../lib/helix.ts";
 
 describe("DeterministicProcessTimeline Playback Controls", () => {
@@ -82,6 +87,29 @@ describe("DeterministicProcessTimeline Playback Controls", () => {
     state = timeline.getState();
     assert.strictEqual(state.isPlaying, true);
     assert.strictEqual(state.isPaused, false);
+  });
+
+  test("rapid repeated playback controls keep a single deterministic timeline state", () => {
+    timeline.play();
+    timeline.play();
+    assert.strictEqual(timeline.getState().isPlaying, true);
+
+    timeline.pause();
+    timeline.pause();
+    assert.strictEqual(timeline.getState().isPlaying, false);
+    assert.strictEqual(timeline.getState().isPaused, true);
+
+    timeline.resume();
+    timeline.resume();
+    assert.strictEqual(timeline.getState().isPlaying, true);
+    timeline.reset();
+    assert.strictEqual(timeline.getState().currentEventIndex, 0);
+    assert.strictEqual(timeline.getState().isPlaying, false);
+    assert.strictEqual(timeline.getState().isPaused, false);
+
+    timeline.stepForward();
+    timeline.stepBackward();
+    assert.strictEqual(timeline.getState().currentEventIndex, 0);
   });
 
   test("Reset returns to the initial event and stops playback", () => {
@@ -205,6 +233,16 @@ describe("Process mode event selection", () => {
     ), null);
   });
 
+  test("switching to a process selects its first event instead of a blank stage", () => {
+    for (const mode of ["replication", "transcription", "translation"] as const) {
+      const event = ProcessLabUtils.getFirstEventForMode(events, mode);
+      assert.ok(event);
+      assert.ok(event.type.startsWith(`${mode}_`));
+      const visual = createMolecularVisualProjector(events, mode)(event.index, event.timestamp, 0);
+      assert.strictEqual(visual?.process, mode);
+    }
+  });
+
   test("navigation can jump to a visible event without leaving an invalid index", () => {
     const translationEvents = ProcessLabUtils.getEventsForMode(events, "translation");
     const target = translationEvents[0];
@@ -218,6 +256,82 @@ describe("Process mode event selection", () => {
 });
 
 describe("Molecular stage event mapping", () => {
+  test("replication structure metadata identifies the experimental CMG-DNA assembly", () => {
+    assert.strictEqual(REPLICATION_STRUCTURE.id, "6XTX");
+    assert.strictEqual(REPLICATION_STRUCTURE.assembly, "1");
+    assert.strictEqual(REPLICATION_STRUCTURE.dnaAuthChain, "M");
+    assert.deepStrictEqual(REPLICATION_STRUCTURE.mcmAuthChains, ["2", "3", "4", "5", "6", "7"]);
+    assert.deepStrictEqual(REPLICATION_STRUCTURE.ginsAuthChains, ["A", "B", "C", "D"]);
+    assert.strictEqual(REPLICATION_STRUCTURE.cdc45AuthChain, "E");
+    assert.strictEqual(REPLICATION_STRUCTURE.resolution, "3.29 Å cryo-EM");
+    assert.match(REPLICATION_STRUCTURE.url, /6XTX-assembly1\.cif$/);
+    assert.match(REPLICATION_STRUCTURE.title, /CMG helicase.*DNA/);
+  });
+
+  test("transcription structure identifies resolved Pol II, bubble DNA, and nascent RNA chains", () => {
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.id, "5C4X");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.rpb1AuthChain, "A");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.rpb2AuthChain, "B");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.nascentRnaAuthChain, "R");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.nonTemplateDnaAuthChain, "S");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.templateDnaAuthChain, "U");
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.nascentRnaLength, 9);
+    assert.strictEqual(TRANSCRIPTION_STRUCTURE.resolution, "4.0 Å X-ray diffraction");
+  });
+
+  test("translation structure overlay follows codon, peptide, and timeline progress", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "AUGGCCUAA",
+      polymer: "RNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      const events = timeline.getState().events;
+      const project = createMolecularVisualProjector(events, "translation");
+      const first = events.find(event => event.type === "translation_progress");
+      const second = events.find(event => event.type === "translation_progress" && event.state.translation?.peptides.length === 2);
+      assert.ok(first);
+      assert.ok(second);
+
+      const firstVisual = project(first.index, first.timestamp, 0);
+      const secondVisual = project(second.index, second.timestamp, 0);
+      assert.ok(firstVisual);
+      assert.ok(secondVisual);
+      assert.deepStrictEqual(getTranslationStructureReadout(firstVisual), {
+        progress: firstVisual.progress,
+        codonNumber: 1,
+        codon: "AUG",
+        peptide: "M",
+      });
+      assert.deepStrictEqual(getTranslationStructureReadout(secondVisual), {
+        progress: secondVisual.progress,
+        codonNumber: 2,
+        codon: "GCC",
+        peptide: "MA",
+      });
+      const firstAction = getProcessAnimationState(firstVisual);
+      const secondAction = getProcessAnimationState(secondVisual);
+      assert.strictEqual(firstAction.activeCodon, "AUG");
+      assert.strictEqual(firstAction.peptide, "M");
+      assert.match(secondAction.actionLabel, /Codon 2/);
+      assert.strictEqual(secondAction.activeCodon, "GCC");
+      assert.strictEqual(secondAction.peptide, "MA");
+      const completeEvent = events.find(event => event.type === "translation_complete");
+      assert.ok(completeEvent);
+      const completeVisual = project(completeEvent.index, completeEvent.timestamp, 0);
+      assert.ok(completeVisual);
+      const completeAction = getProcessAnimationState(completeVisual);
+      assert.strictEqual(completeAction.activeCodon, completeVisual.codons.at(-1));
+      assert.strictEqual(completeAction.actionLabel, "Translation complete");
+      assert.strictEqual(RIBOSOME_STRUCTURE.id, "4V9D");
+      assert.strictEqual(RIBOSOME_STRUCTURE.resolution, "3.0 Å X-ray diffraction");
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
   test("replication maps fork progress and the growing complementary strand", () => {
     const timeline = new DeterministicProcessTimeline({
       sequence: "ATGCGTAC",
@@ -240,6 +354,11 @@ describe("Molecular stage event mapping", () => {
       assert.strictEqual(progressing?.process, "replication");
       assert.strictEqual(progressing?.progress, 1 / 3);
       assert.strictEqual(progressing?.actorPosition, 8 / 3);
+      const action = getProcessAnimationState(progressing!);
+      assert.strictEqual(action.actionLabel, "DNA unwinding");
+      assert.strictEqual(action.synthesizedBases, 2);
+      assert.strictEqual(action.product, "TA");
+      assert.strictEqual(action.forkPosition, 1 / 3);
     } finally {
       timeline.cleanup();
     }
@@ -268,11 +387,34 @@ describe("Molecular stage event mapping", () => {
       const growing = project(progress.index, progress.timestamp, 0);
       assert.strictEqual(growing?.progress, 1 / 3);
       assert.strictEqual(growing?.actorPosition, 8 / 3);
+      const action = getProcessAnimationState(growing!);
+      assert.strictEqual(action.actionLabel, "RNA elongation");
+      assert.strictEqual(action.transcriptBases, 2);
+      assert.strictEqual(action.product, "AU");
       const halfway = project(progress.index - 1, progress.timestamp - 1000, 0);
       assert.strictEqual(halfway?.progress, 1 / 6);
     } finally {
       timeline.cleanup();
     }
+  });
+
+  test("failed RCSB requests and rejected parse caches can be retried", async () => {
+    let attempts = 0;
+    const loadCoordinates = createStructureCoordinateLoader(async () => {
+      attempts++;
+      return attempts === 1
+        ? new Response("unavailable", { status: 503 })
+        : new Response("data_test\n_atom_site.", { status: 200 });
+    });
+    const url = "https://example.invalid/test.cif";
+
+    await assert.rejects(loadCoordinates(url), /HTTP 503/);
+    assert.strictEqual(await loadCoordinates(url), "data_test\n_atom_site.");
+    assert.strictEqual(await loadCoordinates(url), "data_test\n_atom_site.");
+    assert.strictEqual(attempts, 2);
+    loadCoordinates.invalidate(url);
+    assert.strictEqual(await loadCoordinates(url), "data_test\n_atom_site.");
+    assert.strictEqual(attempts, 3);
   });
 
   test("translation maps reading-frame codon, ribosome position, and peptide", () => {
@@ -293,6 +435,9 @@ describe("Molecular stage event mapping", () => {
       assert.strictEqual(visual?.activeCodonStart, 1);
       assert.strictEqual(visual?.codons[0], "UGG");
       assert.strictEqual(visual?.productSequence, "W");
+      const action = getProcessAnimationState(visual!);
+      assert.strictEqual(action.activeCodon, "UGG");
+      assert.strictEqual(action.activeCodonIndex, 0);
       assert.strictEqual(visual?.actorPosition, 1);
     } finally {
       timeline.cleanup();
@@ -319,10 +464,12 @@ describe("Molecular stage event mapping", () => {
       assert.strictEqual(stepped?.progress, 0);
 
       timeline.play();
+      await new Promise(resolve => setTimeout(resolve, 45));
       timeline.pause();
       current = timeline.getState();
       const paused = project(current.currentEventIndex, current.currentTime, 0);
       assert.strictEqual(current.isPaused, true);
+      assert.ok(paused && paused.progress > 0, "playback advances molecular progress");
       await new Promise(resolve => setTimeout(resolve, 30));
       const stillPaused = timeline.getState();
       assert.strictEqual(stillPaused.currentTime, current.currentTime);
@@ -331,6 +478,13 @@ describe("Molecular stage event mapping", () => {
         paused,
         "a frozen timeline snapshot maps to a frozen molecular state",
       );
+
+      timeline.resume();
+      await new Promise(resolve => setTimeout(resolve, 40));
+      timeline.pause();
+      current = timeline.getState();
+      const resumed = project(current.currentEventIndex, current.currentTime, 0);
+      assert.ok(resumed && paused && resumed.progress > paused.progress, "resume continues molecular progress");
 
       timeline.reset();
       current = timeline.getState();
