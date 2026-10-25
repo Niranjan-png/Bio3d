@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { DeterministicProcessTimeline, ProcessLabUtils } from "../lib/processLab.ts";
+import { createMolecularVisualProjector, DeterministicProcessTimeline, ProcessLabUtils } from "../lib/processLab.ts";
 import { getProcessLabSequence, parseSequence } from "../lib/helix.ts";
 
 describe("DeterministicProcessTimeline Playback Controls", () => {
@@ -214,6 +214,131 @@ describe("Process mode event selection", () => {
 
     timeline.goToEvent(events.length);
     assert.strictEqual(timeline.getState().currentEventIndex, target.index);
+  });
+});
+
+describe("Molecular stage event mapping", () => {
+  test("replication maps fork progress and the growing complementary strand", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ATGCGTAC",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+    });
+    try {
+      const events = timeline.getState().events;
+      const project = createMolecularVisualProjector(events, "replication");
+      const initial = project(0, 0, 0);
+      assert.strictEqual(initial?.process, "replication");
+      assert.strictEqual(initial?.progress, 0);
+      assert.strictEqual(initial?.primarySequence, "ATGCGTAC");
+      assert.strictEqual(initial?.secondarySequence, "TACGCATG");
+
+      timeline.stepForward();
+      const state = timeline.getState();
+      const progressing = project(state.currentEventIndex, state.currentTime, 0);
+      assert.strictEqual(progressing?.process, "replication");
+      assert.strictEqual(progressing?.progress, 1 / 3);
+      assert.strictEqual(progressing?.actorPosition, 8 / 3);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
+  test("transcription maps polymerase position and the growing RNA product", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ATGCGTAC",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+    });
+    try {
+      const events = timeline.getState().events;
+      const project = createMolecularVisualProjector(events, "transcription");
+      const start = events.find(event => event.type === "transcription_start");
+      assert.ok(start);
+      const initial = project(start.index, start.timestamp, 0);
+      assert.strictEqual(initial?.process, "transcription");
+      assert.strictEqual(initial?.progress, 0);
+      assert.strictEqual(initial?.primarySequence, "TACGCATG");
+      assert.strictEqual(initial?.productSequence, "AUGCGUAC");
+
+      const progress = events.find(event => event.type === "transcription_progress");
+      assert.ok(progress);
+      const growing = project(progress.index, progress.timestamp, 0);
+      assert.strictEqual(growing?.progress, 1 / 3);
+      assert.strictEqual(growing?.actorPosition, 8 / 3);
+      const halfway = project(progress.index - 1, progress.timestamp - 1000, 0);
+      assert.strictEqual(halfway?.progress, 1 / 6);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
+  test("translation maps reading-frame codon, ribosome position, and peptide", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "AUGGCCUAA",
+      polymer: "RNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 1,
+    });
+    try {
+      const events = timeline.getState().events;
+      const project = createMolecularVisualProjector(events, "translation");
+      const firstCodon = events.find(event => event.type === "translation_progress");
+      assert.ok(firstCodon);
+      const visual = project(firstCodon.index, firstCodon.timestamp, 1);
+      assert.strictEqual(visual?.process, "translation");
+      assert.strictEqual(visual?.activeCodonStart, 1);
+      assert.strictEqual(visual?.codons[0], "UGG");
+      assert.strictEqual(visual?.productSequence, "W");
+      assert.strictEqual(visual?.actorPosition, 1);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
+  test("mode projection follows step, pause, and reset timeline state", async () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ATGCGTAC",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+    });
+    try {
+      const state = timeline.getState();
+      const project = createMolecularVisualProjector(state.events, "transcription");
+      const transcriptionStart = state.events.find(event => event.type === "transcription_start");
+      assert.ok(transcriptionStart);
+
+      timeline.goToEvent(transcriptionStart.index);
+      let current = timeline.getState();
+      const stepped = project(current.currentEventIndex, current.currentTime, 0);
+      assert.strictEqual(stepped?.event.index, transcriptionStart.index);
+      assert.strictEqual(stepped?.progress, 0);
+
+      timeline.play();
+      timeline.pause();
+      current = timeline.getState();
+      const paused = project(current.currentEventIndex, current.currentTime, 0);
+      assert.strictEqual(current.isPaused, true);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      const stillPaused = timeline.getState();
+      assert.strictEqual(stillPaused.currentTime, current.currentTime);
+      assert.deepStrictEqual(
+        project(stillPaused.currentEventIndex, stillPaused.currentTime, 0),
+        paused,
+        "a frozen timeline snapshot maps to a frozen molecular state",
+      );
+
+      timeline.reset();
+      current = timeline.getState();
+      assert.strictEqual(current.currentEventIndex, 0);
+      assert.strictEqual(project(current.currentEventIndex, current.currentTime, 0), null);
+    } finally {
+      timeline.cleanup();
+    }
   });
 });
 

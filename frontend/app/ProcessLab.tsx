@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type Polymer } from "../lib/helix";
 import DeterministicProcessTimeline, { type ProcessLabMode, ProcessLabUtils } from "../lib/processLab";
+import ProcessMolecularStage from "./ProcessMolecularStage";
 
 interface ProcessLabProps {
   readonly sequence: string;
@@ -282,6 +283,15 @@ export default function ProcessLab({
         </aside>
 
         <main className="process-display">
+          <ProcessMolecularStage
+            timeline={timeline}
+            events={allEvents}
+            mode={activeMode}
+            frame={selectedFrame}
+            currentEventIndex={currentEventIndex}
+            currentTime={currentTime}
+          />
+
           <div className="event-timeline">
             <h3>Event Timeline</h3>
             <div className="timeline-container">

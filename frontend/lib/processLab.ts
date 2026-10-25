@@ -109,6 +109,29 @@ export interface TimelineEvent {
   readonly explanation: string;
 }
 
+export type MolecularProcess = "replication" | "transcription" | "translation";
+
+export interface MolecularVisualState {
+  readonly process: MolecularProcess;
+  readonly event: TimelineEvent;
+  readonly explanation: string;
+  readonly progress: number;
+  readonly primarySequence: string;
+  readonly secondarySequence: string;
+  readonly productSequence: string;
+  readonly actorPosition: number;
+  readonly codons: readonly string[];
+  readonly peptides: readonly string[];
+  readonly frame: number;
+  readonly activeCodonStart: number;
+}
+
+export type MolecularVisualProjector = (
+  currentEventIndex: number,
+  currentTime: number,
+  frame: number,
+) => MolecularVisualState | null;
+
 /** Configuration for the process lab */
 export interface ProcessLabConfig {
   readonly sequence: string;
@@ -712,5 +735,126 @@ export const ProcessLabUtils = {
     };
   },
 };
+
+/**
+ * Build an inexpensive per-frame projection from existing timeline events.
+ * Progress interpolates only between adjacent events in the same process; it
+ * never invents timeline events or changes their playback semantics.
+ */
+export function createMolecularVisualProjector(
+  events: readonly TimelineEvent[],
+  mode: ProcessLabMode,
+): MolecularVisualProjector {
+  const visibleEvents = ProcessLabUtils.getEventsForMode(events, mode);
+  const replicationStart = events.find(event => event.type === "replication_start")?.state.replication;
+  const transcriptionStart = events.find(event => event.type === "transcription_start")?.state.transcription;
+  const transcriptionComplete = events.find(event => event.type === "transcription_complete")?.state.transcription;
+  const translationStart = events.find(event => event.type === "translation_start")?.state.translation;
+  const replicationProduct = replicationStart
+    ? complement(replicationStart.parental, "DNA")
+    : "";
+  const transcriptionProduct = transcriptionComplete?.rna ?? "";
+
+  return (currentEventIndex, currentTime, frame) => {
+    let low = 0;
+    let high = visibleEvents.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (visibleEvents[middle].index <= currentEventIndex) low = middle + 1;
+      else high = middle;
+    }
+    const visibleIndex = low - 1;
+    if (visibleIndex < 0) return null;
+
+    const event = visibleEvents[visibleIndex];
+    const nextEvent = visibleEvents[visibleIndex + 1];
+    const progressFor = (current: TimelineEvent, next?: TimelineEvent): number => {
+      const process = current.type.split("_")[0];
+      const currentProgress = current.state[process as MolecularProcess]?.progress ?? 0;
+      if (!next || next.type.split("_")[0] !== process || next.timestamp <= current.timestamp) {
+        return currentProgress;
+      }
+      const nextProgress = next.state[process as MolecularProcess]?.progress ?? currentProgress;
+      const fraction = Math.max(
+        0,
+        Math.min(1, (currentTime - current.timestamp) / (next.timestamp - current.timestamp)),
+      );
+      return currentProgress + (nextProgress - currentProgress) * fraction;
+    };
+    const progress = progressFor(event, nextEvent);
+
+    if (event.state.replication && replicationStart) {
+      const count = replicationStart.parental.length;
+      return {
+        process: "replication",
+        event,
+        explanation: event.explanation,
+        progress,
+        primarySequence: replicationStart.parental,
+        secondarySequence: replicationProduct,
+        productSequence: "",
+        actorPosition: progress * count,
+        codons: [],
+        peptides: [],
+        frame,
+        activeCodonStart: 0,
+      };
+    }
+
+    if (event.state.transcription && transcriptionStart) {
+      const count = transcriptionStart.template.length;
+      return {
+        process: "transcription",
+        event,
+        explanation: event.explanation,
+        progress,
+        primarySequence: transcriptionStart.template,
+        secondarySequence: complement(transcriptionStart.template, "DNA"),
+        productSequence: transcriptionProduct,
+        actorPosition: progress * count,
+        codons: [],
+        peptides: [],
+        frame,
+        activeCodonStart: 0,
+      };
+    }
+
+    if (event.state.translation && translationStart) {
+      const translation = event.state.translation;
+      const currentPosition = translation.ribosomePosition;
+      let actorPosition = currentPosition;
+      if (
+        nextEvent?.state.translation &&
+        nextEvent.timestamp > event.timestamp
+      ) {
+        const fraction = Math.max(
+          0,
+          Math.min(1, (currentTime - event.timestamp) / (nextEvent.timestamp - event.timestamp)),
+        );
+        actorPosition +=
+          (nextEvent.state.translation.ribosomePosition - currentPosition) * fraction;
+      }
+      const activeCodonStart = Math.min(
+        Math.max(frame, frame + Math.floor(Math.max(0, actorPosition - frame) / 3) * 3),
+        Math.max(frame, translation.mrna.length - 1),
+      );
+      return {
+        process: "translation",
+        event,
+        explanation: event.explanation,
+        progress,
+        primarySequence: translation.mrna,
+        secondarySequence: "",
+        productSequence: translation.peptides.join(""),
+        actorPosition,
+        codons: translation.codons,
+        peptides: translation.peptides,
+        frame,
+        activeCodonStart,
+      };
+    }
+    return null;
+  };
+}
 
 export default DeterministicProcessTimeline;
