@@ -1,5 +1,6 @@
 export const MAX_SEQUENCE_LENGTH = 10000;
 export const DEFAULT_VISUAL_WINDOW = 180;
+export const DEFAULT_DNA_SEQUENCE = "ATGCGTACGTTAGCCATGCA";
 export type Polymer = "DNA" | "RNA";
 export type SequenceRecord = { sequence: string; title: string; invalid: string[]; ambiguous: number[] };
 const IUPAC = new Set("ACGTURYSWKMBDHVN".split(""));
@@ -13,6 +14,10 @@ export function parseSequence(input: string, polymer: Polymer): SequenceRecord {
   if (raw.includes(expectedOther)) invalid.push(`${expectedOther} is not valid for ${polymer}`);
   const sequence = raw.replace(/[^ACGTURYSWKMBDHVN]/g, "").replace(new RegExp(expectedOther, "g"), "");
   return { sequence, title: headers[0] || "Untitled sequence", invalid, ambiguous: [...sequence].flatMap((base, index) => "ACGTU".includes(base) ? [] : [index]) };
+}
+export function getProcessLabSequence(record: SequenceRecord, polymer: Polymer): string | null {
+  if (polymer !== "DNA" || !record.sequence.length || record.sequence.length > MAX_SEQUENCE_LENGTH || record.invalid.length || record.ambiguous.length) return null;
+  return record.sequence;
 }
 export function complementBase(base: string, polymer: Polymer) {
   const pairs: Record<string, string> = polymer === "DNA" ? { A: "T", T: "A", C: "G", G: "C" } : { A: "U", U: "A", C: "G", G: "C" };

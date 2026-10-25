@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.sequence import router as sequence_router
 
 settings = get_settings()
 app = FastAPI(title="BioPilot 3D Lab API", version="0.1.0", docs_url="/docs", redoc_url=None)
@@ -9,9 +10,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET"],
-    allow_headers=[],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
+
+app.include_router(sequence_router)
 
 
 @app.get("/api/health", tags=["system"])

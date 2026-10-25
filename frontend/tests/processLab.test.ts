@@ -1,6 +1,7 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { DeterministicProcessTimeline } from "../lib/processLab.ts";
+import { DeterministicProcessTimeline, ProcessLabUtils } from "../lib/processLab.ts";
+import { getProcessLabSequence, parseSequence } from "../lib/helix.ts";
 
 describe("DeterministicProcessTimeline Playback Controls", () => {
   const sampleSequence = "ATGCGTACGTTAGCCATGCA";
@@ -162,5 +163,233 @@ describe("DeterministicProcessTimeline Playback Controls", () => {
     assert.strictEqual(finalState.currentEventIndex, lastIndex);
     assert.strictEqual(finalState.isPlaying, false);
     assert.strictEqual(finalState.isPaused, false);
+  });
+});
+
+describe("Process mode event selection", () => {
+  const timeline = new DeterministicProcessTimeline({
+    sequence: "ATGCGTACGTTAGCCATGCA",
+    polymer: "DNA",
+    speed: 1,
+    autoPlay: false,
+    frame: 0,
+  });
+  const events = timeline.getState().events;
+
+  afterEach(() => {
+    timeline.cleanup();
+  });
+
+  for (const mode of ["replication", "transcription", "translation"] as const) {
+    test(`${mode} mode contains only its events`, () => {
+      const visibleEvents = ProcessLabUtils.getEventsForMode(events, mode);
+      assert.ok(visibleEvents.length > 0);
+      assert.ok(visibleEvents.every(event => event.type.startsWith(`${mode}_`)));
+      assert.ok(visibleEvents.every(event => events[event.index] === event));
+    });
+  }
+
+  test("combined mode contains all events in their original order", () => {
+    assert.deepStrictEqual(ProcessLabUtils.getEventsForMode(events, "combined"), events);
+  });
+
+  test("mode selection resolves to a valid preceding visible event", () => {
+    const replicationEvents = ProcessLabUtils.getEventsForMode(events, "replication");
+    const firstHiddenIndex = events.findIndex(event => event.type.startsWith("transcription_"));
+    const selectedEvent = ProcessLabUtils.getCurrentEventForMode(replicationEvents, firstHiddenIndex);
+
+    assert.strictEqual(selectedEvent?.index, replicationEvents[replicationEvents.length - 1].index);
+    assert.strictEqual(ProcessLabUtils.getCurrentEventForMode(
+      ProcessLabUtils.getEventsForMode(events, "translation"),
+      0,
+    ), null);
+  });
+
+  test("navigation can jump to a visible event without leaving an invalid index", () => {
+    const translationEvents = ProcessLabUtils.getEventsForMode(events, "translation");
+    const target = translationEvents[0];
+    timeline.goToEvent(target.index);
+    assert.strictEqual(timeline.getState().currentEventIndex, target.index);
+    assert.strictEqual(timeline.getState().currentTime, target.timestamp);
+
+    timeline.goToEvent(events.length);
+    assert.strictEqual(timeline.getState().currentEventIndex, target.index);
+  });
+});
+
+describe("Process sequence updates", () => {
+  test("a new sequence updates generated events and resets the timeline", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ATGCGTACGTTAGCCATGCA",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      timeline.stepForward();
+      timeline.play();
+      assert.strictEqual(timeline.getState().isPlaying, true);
+
+      const nextSequence = parseSequence("> Updated DNA\nGAT TACA", "DNA").sequence;
+      assert.strictEqual(nextSequence, "GATTACA");
+      timeline.updateConfig({ sequence: nextSequence });
+
+      const state = timeline.getState();
+      assert.strictEqual(state.events[0].state.replication?.parental, nextSequence);
+      assert.strictEqual(state.currentEventIndex, 0);
+      assert.strictEqual(state.currentTime, 0);
+      assert.strictEqual(state.isPlaying, false);
+      assert.strictEqual(state.isPaused, false);
+      assert.strictEqual(timeline.getCurrentEvent()?.index, 0);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+});
+
+describe("Biological sequence and translation rules", () => {
+  test("only canonical DNA sequences are passed from the helix lab to ProcessLab", () => {
+    const dna = parseSequence("> DNA\nATGCGT", "DNA");
+    assert.strictEqual(getProcessLabSequence(dna, "DNA"), "ATGCGT");
+
+    const ambiguousDna = parseSequence("ATGN", "DNA");
+    assert.strictEqual(getProcessLabSequence(ambiguousDna, "DNA"), null);
+    assert.strictEqual(getProcessLabSequence(parseSequence("ATGX", "DNA"), "DNA"), null);
+    assert.strictEqual(getProcessLabSequence(parseSequence("AUGC", "RNA"), "RNA"), null);
+  });
+
+  test("DNA replication/transcription reject RNA bases; RNA supports translation only", () => {
+    assert.strictEqual(ProcessLabUtils.validateSequence("ATGC", "DNA").valid, true);
+    assert.strictEqual(ProcessLabUtils.validateSequence("AUGC", "DNA").valid, false);
+    assert.strictEqual(ProcessLabUtils.validateSequence("AUGC", "RNA").valid, true);
+    assert.strictEqual(ProcessLabUtils.validateSequence("ATGC", "RNA").valid, false);
+    assert.ok(ProcessLabUtils.validateSequence("AUGX", "RNA").errors[0].includes("X"));
+
+    const rnaTimeline = new DeterministicProcessTimeline({
+      sequence: "AUGGCC",
+      polymer: "RNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      const events = rnaTimeline.getState().events;
+      assert.ok(events.length > 0);
+      assert.ok(events.every(event => event.type.startsWith("translation_")));
+      assert.ok(events.every(event => !event.state.replication && !event.state.transcription));
+    } finally {
+      rnaTimeline.cleanup();
+    }
+
+    const dnaTimeline = new DeterministicProcessTimeline({
+      sequence: "ATGC",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      const events = dnaTimeline.getState().events;
+      assert.ok(events.some(event => event.type === "replication_complete"));
+      assert.ok(events.some(event => event.type === "transcription_complete"));
+      assert.ok(events.some(event => event.type === "translation_complete"));
+      const transcribedRna = events.find(event => event.type === "transcription_complete")?.state.transcription?.rna;
+      assert.ok(transcribedRna && /^[ACGU]+$/.test(transcribedRna));
+    } finally {
+      dnaTimeline.cleanup();
+    }
+  });
+
+  test("reading frames apply offsets and ignore incomplete trailing codons", () => {
+    const frames = ProcessLabUtils.getReadingFrames("AUGGCCUAA");
+    assert.deepStrictEqual(frames.map(({ codons, peptide }) => ({ codons, peptide })), [
+      { codons: ["AUG", "GCC", "UAA"], peptide: "MA" },
+      { codons: ["UGG", "CCU"], peptide: "WP" },
+      { codons: ["GGC", "CUA"], peptide: "GL" },
+    ]);
+
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "AUGGCCUAA",
+      polymer: "RNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 1,
+    });
+    try {
+      const events = timeline.getState().events;
+      const start = events.find(event => event.type === "translation_start");
+      const complete = events.find(event => event.type === "translation_complete");
+      assert.strictEqual(start?.state.translation?.ribosomePosition, 1);
+      assert.deepStrictEqual(complete?.state.translation?.codons, ["UGG", "CCU"]);
+      assert.strictEqual(complete?.state.translation?.peptides.join(""), "WP");
+      assert.strictEqual(complete?.state.translation?.ribosomePosition, 7);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
+  test("all standard stop codons terminate translation without entering the peptide", () => {
+    for (const stopCodon of ["UAA", "UAG", "UGA"]) {
+      const timeline = new DeterministicProcessTimeline({
+        sequence: `AUG${stopCodon}UGG`,
+        polymer: "RNA",
+        speed: 1,
+        autoPlay: false,
+        frame: 0,
+      });
+      try {
+        const events = timeline.getState().events;
+        const progress = events.filter(event => event.type === "translation_progress");
+        const complete = events.find(event => event.type === "translation_complete");
+        assert.strictEqual(progress.length, 2);
+        assert.deepStrictEqual(complete?.state.translation?.codons, ["AUG", stopCodon]);
+        assert.strictEqual(complete?.state.translation?.peptides.join(""), "M");
+        assert.ok(complete?.explanation.includes("terminated at stop codon"));
+      } finally {
+        timeline.cleanup();
+      }
+    }
+  });
+
+  test("invalid alphabets and reading frames do not generate process events", () => {
+    assert.strictEqual(ProcessLabUtils.validateSequence("ATGX", "DNA").valid, false);
+    assert.strictEqual(ProcessLabUtils.validateSequence("AUGX", "RNA").valid, false);
+    assert.strictEqual(ProcessLabUtils.validateSequence("AUG", "RNA", 3).valid, false);
+
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ATGX",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      assert.deepStrictEqual(timeline.getState().events, []);
+      assert.strictEqual(timeline.getCurrentEvent(), null);
+      timeline.play();
+      assert.strictEqual(timeline.getState().isPlaying, false);
+    } finally {
+      timeline.cleanup();
+    }
+  });
+
+  test("changing only the polymer regenerates events for the new molecule type", () => {
+    const timeline = new DeterministicProcessTimeline({
+      sequence: "ACG",
+      polymer: "DNA",
+      speed: 1,
+      autoPlay: false,
+      frame: 0,
+    });
+    try {
+      assert.ok(timeline.getState().events.some(event => event.type === "replication_start"));
+      timeline.updateConfig({ polymer: "RNA" });
+      const events = timeline.getState().events;
+      assert.ok(events.some(event => event.type === "translation_start"));
+      assert.ok(events.every(event => event.type.startsWith("translation_")));
+    } finally {
+      timeline.cleanup();
+    }
   });
 });

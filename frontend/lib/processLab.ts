@@ -80,6 +80,8 @@ export type EventType =
   | "translation_complete"
   | "step";
 
+export type ProcessLabMode = "replication" | "transcription" | "translation" | "combined";
+
 /** Event in the deterministic timeline */
 export interface TimelineEvent {
   readonly index: number;
@@ -189,9 +191,13 @@ export class DeterministicProcessTimeline {
 
   private generateEvents(): TimelineEvent[] {
     const { sequence, polymer } = this.config;
+    if (!ProcessLabUtils.validateSequence(sequence, polymer, this.config.frame ?? 0).valid) return [];
     const events: TimelineEvent[] = [];
     let timestamp = 0;
+    let rnaSequence = sequence;
+    const frame = this.config.frame ?? 0;
 
+    if (polymer === "DNA") {
     // Replication events
     events.push({
       index: events.length,
@@ -265,7 +271,7 @@ export class DeterministicProcessTimeline {
       explanation: `Initiating transcription from DNA template strand. RNA polymerase binds to promoter and begins synthesizing RNA complementary to the template strand (T→A, A→U, C→G, G→C).`,
     });
 
-    const rnaSequence = newStrand.split("").map(base => DNA_TO_RNA[base] || "U").join("");
+    rnaSequence = newStrand.split("").map(base => DNA_TO_RNA[base]).join("");
     const transcriptionSteps = Math.ceil(newStrand.length / 3);
 
     for (let i = 0; i < transcriptionSteps; i++) {
@@ -305,9 +311,12 @@ export class DeterministicProcessTimeline {
       },
       explanation: `Transcription complete. mRNA produced: ${rnaSequence}. mRNA contains ${rnaSequence.length} bases with 5' cap and 3' poly-A tail in biological systems (simplified here).`,
     });
+    }
 
     // Translation events
+    if (polymer === "RNA") timestamp = -this.eventDuration;
     timestamp += this.eventDuration;
+    const translationStart = Math.min(frame, rnaSequence.length);
     events.push({
       index: events.length,
       type: "translation_start",
@@ -317,16 +326,15 @@ export class DeterministicProcessTimeline {
           mrna: rnaSequence,
           codons: [],
           peptides: [],
-          ribosomePosition: 0,
+          ribosomePosition: translationStart,
           progress: 0,
         },
       },
-      explanation: `Initiating translation. Ribosome binds to mRNA 5' end. Reading frame ${this.config.frame ?? 0}: mRNA codons will be read in triplets 5'→3' to assemble amino acid sequence.`,
+      explanation: `Initiating translation at reading-frame offset ${frame}. Codons are read in triplets 5'→3'; start-codon recognition is not modeled.`,
     });
 
     const codons: string[] = [];
     const peptides: string[] = [];
-    const frame = this.config.frame ?? 0;
     let hitStopCodon = false;
 
     for (let i = frame; i <= rnaSequence.length - 3; i += 3) {
@@ -334,9 +342,9 @@ export class DeterministicProcessTimeline {
       const codon = rnaSequence.slice(i, i + 3);
       codons.push(codon);
       const aminoAcid = GENETIC_CODE[codon] || "X";
-      peptides.push(aminoAcid);
-      const progress = i / Math.max(1, rnaSequence.length - 2);
+      const progress = codons.length / Math.max(1, Math.floor((rnaSequence.length - frame) / 3));
 
+      if (aminoAcid !== "*") peptides.push(aminoAcid);
       events.push({
         index: events.length,
         type: "translation_progress",
@@ -386,7 +394,7 @@ export class DeterministicProcessTimeline {
             mrna: rnaSequence,
             codons: [...codons],
             peptides: [...peptides],
-            ribosomePosition: rnaSequence.length,
+            ribosomePosition: Math.min(frame + codons.length * 3, rnaSequence.length),
             progress: 1,
           },
         },
@@ -407,7 +415,7 @@ export class DeterministicProcessTimeline {
   }
 
   public play(): void {
-    if (this.state.isPlaying) return;
+    if (this.state.isPlaying || !this.state.events.length) return;
     if (this.state.currentEventIndex >= this.state.events.length - 1) {
       this.state = {
         ...this.state,
@@ -432,7 +440,7 @@ export class DeterministicProcessTimeline {
   }
 
   public resume(): void {
-    if (this.state.isPlaying) return;
+    if (this.state.isPlaying || !this.state.events.length) return;
     if (this.state.currentEventIndex >= this.state.events.length - 1) {
       this.state = {
         ...this.state,
@@ -496,6 +504,22 @@ export class DeterministicProcessTimeline {
       };
       this.notifyListeners();
     }
+  }
+
+  public goToEvent(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= this.state.events.length) return;
+    if (this.animationId !== null) {
+      safeCancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
+    this.state = {
+      ...this.state,
+      currentEventIndex: index,
+      currentTime: this.state.events[index].timestamp,
+      isPlaying: false,
+      isPaused: false,
+    };
+    this.notifyListeners();
   }
 
   public setSpeed(speed: number): void {
@@ -582,9 +606,11 @@ export class DeterministicProcessTimeline {
   }
 
   public updateConfig(newConfig: Partial<ProcessLabConfig>): void {
+    const sequenceChanged = newConfig.sequence !== undefined && newConfig.sequence !== this.config.sequence;
+    const polymerChanged = newConfig.polymer !== undefined && newConfig.polymer !== this.config.polymer;
+    const frameChanged = newConfig.frame !== undefined && newConfig.frame !== this.config.frame;
     this.config = { ...this.config, ...newConfig };
-    // If sequence or frame changed, regenerate events
-    if (newConfig.sequence || newConfig.frame !== undefined) {
+    if (sequenceChanged || polymerChanged || frameChanged) {
       if (this.animationId !== null) {
         safeCancelAnimationFrame(this.animationId);
         this.animationId = null;
@@ -604,7 +630,21 @@ export class DeterministicProcessTimeline {
 
 /** Utility functions for deterministic process calculations */
 export const ProcessLabUtils = {
-  validateSequence(sequence: string, polymer: Polymer): { valid: boolean; errors: string[] } {
+  getEventsForMode(events: readonly TimelineEvent[], mode: ProcessLabMode): readonly TimelineEvent[] {
+    if (mode === "combined") return events;
+    return events.filter(event => event.type.startsWith(`${mode}_`));
+  },
+
+  getCurrentEventForMode(events: readonly TimelineEvent[], currentEventIndex: number): TimelineEvent | null {
+    let currentEvent: TimelineEvent | null = null;
+    for (const event of events) {
+      if (event.index > currentEventIndex) break;
+      currentEvent = event;
+    }
+    return currentEvent;
+  },
+
+  validateSequence(sequence: string, polymer: Polymer, frame = 0): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
     if (!sequence || sequence.length === 0) {
       errors.push("Sequence cannot be empty");
@@ -617,6 +657,9 @@ export const ProcessLabUtils = {
     if (invalid.length > 0) {
       errors.push(`Invalid bases for ${polymer}: ${invalid.join(", ")}`);
     }
+    if (!Number.isInteger(frame) || frame < 0 || frame > 2) {
+      errors.push("Reading frame must be 0, 1, or 2");
+    }
     return { valid: errors.length === 0, errors };
   },
 
@@ -627,11 +670,13 @@ export const ProcessLabUtils = {
       let peptide = "";
       for (let i = frame; i <= sequence.length - 3; i += 3) {
         const codon = sequence.slice(i, i + 3);
-        codons.push(codon);
-        peptide += GENETIC_CODE[codon] || "X";
-        if (GENETIC_CODE[codon] === "*") {
+        const aminoAcid = GENETIC_CODE[codon] || "X";
+        if (aminoAcid === "*") {
+          codons.push(codon);
           break;
         }
+        codons.push(codon);
+        peptide += aminoAcid;
       }
       frames.push({ frame, codons, peptide });
     }
@@ -644,7 +689,7 @@ export const ProcessLabUtils = {
     return `${seconds}.${ms.toString().padStart(3, "0")}s`;
   },
 
-  getProcessSummary(events: TimelineEvent[]): {
+  getProcessSummary(events: readonly TimelineEvent[]): {
     readonly replicationComplete: boolean;
     readonly transcriptionComplete: boolean;
     readonly translationComplete: boolean;

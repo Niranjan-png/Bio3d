@@ -3,6 +3,7 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DnaLab from "./DnaLab";
 import ProcessLab from "./ProcessLab";
+import { DEFAULT_DNA_SEQUENCE } from "../lib/helix";
 
 type Representation = "cartoon" | "stick" | "sphere" | "line";
 type ColorMode = "chain" | "element" | "residue";
@@ -81,6 +82,7 @@ function sleep(milliseconds: number) {
 }
 
 export default function Home() {
+  const [processSequence, setProcessSequence] = useState(DEFAULT_DNA_SEQUENCE);
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
   const sourceRef = useRef<string>("");
@@ -230,8 +232,8 @@ export default function Home() {
       <div className="canvas-column"><div className="viewport-frame"><div ref={canvasRef} className="molecule-canvas" aria-label="Interactive 3D molecular structure canvas" role="application" />{!sourceRef.current && !loading && <div className="empty-state"><strong>Ready for real coordinates</strong><span>Enter a PDB ID or upload a PDB file to begin.</span></div>}{loading && <div className="loading-state" role="status"><span className="spinner" /> Loading coordinates…</div>}<div className="viewport-badge">3Dmol.js · WebGL</div></div><div className="notice" aria-live="polite">{error ? <><strong>Load issue.</strong> {error}</> : status}</div><div className="scientific-note"><strong>Interpretation note.</strong> Displayed coordinates are deposited structural models, not a measure of certainty or biological activity. Check the RCSB entry, experimental method, resolution, model, ligands, and author annotations before drawing conclusions.</div></div>
       <aside className="inspect-panel"><div><p className="panel-kicker">Structure index</p><h2>{summary.atoms.length ? "Parsed coordinates" : "Awaiting data"}</h2><dl className="metrics"><div><dt>Atoms</dt><dd>{summary.atoms.length.toLocaleString()}</dd></div><div><dt>Residues</dt><dd>{summary.residues.toLocaleString()}</dd></div><div><dt>Chains</dt><dd>{summary.chains.length}</dd></div></dl></div><div className="panel-section"><p className="panel-kicker">Chain visibility</p><div className="chain-list">{summary.chains.length ? summary.chains.map((chain) => <label key={chain}><input type="checkbox" checked={visibleChains.includes(chain)} onChange={() => setVisibleChains((current) => current.includes(chain) ? current.filter((item) => item !== chain) : [...current, chain])} /> <span className={`chain-swatch chain-${chain.charCodeAt(0) % 5}`} />{readableChain(chain)}</label>) : <p className="placeholder">Loaded chains will appear here.</p>}</div><label htmlFor="active-chain">Focus chain</label><select id="active-chain" value={activeChain} onChange={(event) => setActiveChain(event.target.value)} disabled={!summary.chains.length}><option value="all">All visible chains</option>{summary.chains.map((chain) => <option key={chain} value={chain}>{readableChain(chain)}</option>)}</select></div><div className="panel-section atom-card"><p className="panel-kicker">Atom inspection</p><p>{atomLabel}</p>{selectedAtom && <code>{selectedAtom.element} · x {selectedAtom.x.toFixed(3)} · y {selectedAtom.y.toFixed(3)} · z {selectedAtom.z.toFixed(3)} Å</code>}</div><div className="legend"><p className="panel-kicker">Legend</p><span><i className="oxygen" />Oxygen</span><span><i className="nitrogen" />Nitrogen</span><span><i className="carbon" />Carbon</span><span>Chain/residue schemes use 3Dmol.js coloring.</span></div></aside>
     </section>
-    <DnaLab />
-    <ProcessLab sequence="ATGCGTACGTTAGCCATGCA" polymer="DNA" />
+    <DnaLab onSequenceChange={setProcessSequence} />
+    <ProcessLab sequence={processSequence} polymer="DNA" />
     <footer><span>BioPilot 3D Lab</span><span>PDB-only in Milestone 2</span><span>Local files stay in this browser session</span></footer>
   </main>;
 }

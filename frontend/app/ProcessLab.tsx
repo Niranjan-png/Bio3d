@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type Polymer } from "../lib/helix";
-import DeterministicProcessTimeline, { type TimelineEvent, ProcessLabUtils } from "../lib/processLab";
-
-type ProcessLabMode = "replication" | "transcription" | "translation" | "combined";
+import DeterministicProcessTimeline, { type ProcessLabMode, ProcessLabUtils } from "../lib/processLab";
 
 interface ProcessLabProps {
   readonly sequence: string;
@@ -36,9 +34,12 @@ export default function ProcessLab({
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedFrame, setSelectedFrame] = useState(initialFrame);
   const [speed, setSpeed] = useState(1);
-  const [validation, setValidation] = useState({ valid: true, errors: [] as string[] });
 
   const timelineRef = useRef<DeterministicProcessTimeline | null>(null);
+  const validation = ProcessLabUtils.validateSequence(sequence, polymer, selectedFrame);
+  const activeMode = polymer === "RNA" && (mode === "replication" || mode === "transcription")
+    ? "translation"
+    : mode;
 
   // Initialize timeline and subscribe to state changes
   useEffect(() => {
@@ -60,11 +61,6 @@ export default function ProcessLab({
       newTimeline.cleanup();
     };
   }, []);
-
-  // Update validation
-  useEffect(() => {
-    setValidation(ProcessLabUtils.validateSequence(sequence, polymer));
-  }, [sequence, polymer]);
 
   // Sync config when props change
   useEffect(() => {
@@ -103,16 +99,26 @@ export default function ProcessLab({
   }, []);
 
   const handleStepForward = useCallback(() => {
-    if (timelineRef.current) {
-      timelineRef.current.stepForward();
-    }
-  }, []);
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    const state = currentTimeline.getState();
+    const visibleEvents = ProcessLabUtils.getEventsForMode(state.events, activeMode);
+    const currentEvent = ProcessLabUtils.getCurrentEventForMode(visibleEvents, state.currentEventIndex);
+    const currentVisibleIndex = currentEvent ? visibleEvents.findIndex(event => event.index === currentEvent.index) : -1;
+    const nextEvent = visibleEvents[currentVisibleIndex + 1];
+    if (nextEvent) currentTimeline.goToEvent(nextEvent.index);
+  }, [activeMode]);
 
   const handleStepBackward = useCallback(() => {
-    if (timelineRef.current) {
-      timelineRef.current.stepBackward();
-    }
-  }, []);
+    const currentTimeline = timelineRef.current;
+    if (!currentTimeline) return;
+    const state = currentTimeline.getState();
+    const visibleEvents = ProcessLabUtils.getEventsForMode(state.events, activeMode);
+    const currentEvent = ProcessLabUtils.getCurrentEventForMode(visibleEvents, state.currentEventIndex);
+    const currentVisibleIndex = currentEvent ? visibleEvents.findIndex(event => event.index === currentEvent.index) : -1;
+    const previousEvent = visibleEvents[currentVisibleIndex - 1];
+    if (previousEvent) currentTimeline.goToEvent(previousEvent.index);
+  }, [activeMode]);
 
   const handleSpeedChange = useCallback((newSpeed: number) => {
     setSpeed(newSpeed);
@@ -129,8 +135,11 @@ export default function ProcessLab({
     }
   }, []);
 
-  const currentEvent = timeline?.getState().events[currentEventIndex];
-  const processSummary = currentEvent ? ProcessLabUtils.getProcessSummary(timeline.getState().events as TimelineEvent[]) : null;
+  const allEvents = timeline?.getState().events ?? [];
+  const visibleEvents = ProcessLabUtils.getEventsForMode(allEvents, activeMode);
+  const currentEvent = ProcessLabUtils.getCurrentEventForMode(visibleEvents, currentEventIndex);
+  const currentVisibleIndex = currentEvent ? visibleEvents.findIndex(event => event.index === currentEvent.index) : -1;
+  const processSummary = ProcessLabUtils.getProcessSummary(visibleEvents);
 
   return (
     <section className={`process-lab ${className}`} aria-labelledby="process-lab-heading">
@@ -180,13 +189,13 @@ export default function ProcessLab({
             <div className="navigation-buttons">
               <button 
                 onClick={handleStepBackward}
-                disabled={currentEventIndex === 0 || isPlaying}
+                disabled={currentVisibleIndex <= 0 || isPlaying}
               >
                 Step Back
               </button>
               <button 
                 onClick={handleStepForward}
-                disabled={currentEventIndex >= (timeline?.getState().events.length ?? 0) - 1 || isPlaying}
+                disabled={currentVisibleIndex >= visibleEvents.length - 1 || isPlaying}
               >
                 Step Forward
               </button>
@@ -224,7 +233,7 @@ export default function ProcessLab({
               ))}
             </div>
             <p className="frame-help">
-              Reading frame determines where translation starts (0, 1, or 2 bases offset).
+              Reading frame sets the starting offset (0, 1, or 2); start-codon recognition is not modeled.
             </p>
           </div>
 
@@ -242,7 +251,8 @@ export default function ProcessLab({
                 <button
                   key={modeValue}
                   onClick={() => setMode(modeValue)}
-                  className={mode === modeValue ? "active" : ""}
+                  className={activeMode === modeValue ? "active" : ""}
+                  disabled={polymer === "RNA" && (modeValue === "replication" || modeValue === "transcription")}
                 >
                   {label}
                 </button>
@@ -254,6 +264,11 @@ export default function ProcessLab({
             {!validation.valid && (
               <div className="validation-error">
                 <strong>Validation errors:</strong> {validation.errors.join(", ")}
+              </div>
+            )}
+            {validation.valid && polymer === "RNA" && (
+              <div className="sequence-info">
+                RNA is treated as 5′→3′ mRNA for translation only; DNA replication and transcription are unavailable.
               </div>
             )}
             {validation.valid && (
@@ -270,10 +285,10 @@ export default function ProcessLab({
           <div className="event-timeline">
             <h3>Event Timeline</h3>
             <div className="timeline-container">
-              {timeline?.getState().events.map((event, index) => (
+              {visibleEvents.map((event, index) => (
                 <div
                   key={event.index}
-                  className={`timeline-event ${index === currentEventIndex ? "active" : ""} ${event.type}`}
+                  className={`timeline-event ${event.index === currentEvent?.index ? "active" : ""} ${event.type}`}
                 >
                   <div className="event-marker">
                     <span className="event-index">{index + 1}</span>
@@ -348,7 +363,7 @@ export default function ProcessLab({
               </div>
             ) : (
               <div className="no-event">
-                <p>No event selected. Start the process to begin.</p>
+                <p>{!validation.valid ? "Correct the sequence or reading frame to generate process events." : visibleEvents.length ? "No event in this mode has occurred yet." : "No events available for this mode."}</p>
               </div>
             )}
           </div>
@@ -393,10 +408,11 @@ export default function ProcessLab({
         <h4>Conventions & Limitations</h4>
         <ul>
           <li><strong>Simplified mechanics:</strong> Shows idealized processes without molecular crowding, enzyme kinetics, or cellular context.</li>
+          <li><strong>Strand convention:</strong> The supplied DNA strand is treated as parental; its new complement is the transcription template. RNA input is treated as 5′→3′ mRNA.</li>
           <li><strong>Deterministic timeline:</strong> Each step occurs at fixed intervals for educational clarity.</li>
-          <li><strong>Reading frames:</strong> Translation starts at specified frame; incomplete codons at end are ignored.</li>
-          <li><strong>Stop codons:</strong> Translation terminates at first stop codon encountered.</li>
-          <li><strong>Sequence limits:</strong> Maximum 10,000 bases; longer sequences are truncated for performance.</li>
+          <li><strong>Reading frames:</strong> Translation starts at the selected offset; incomplete trailing codons are ignored and start-codon recognition is not modeled.</li>
+          <li><strong>Stop codons:</strong> The first standard stop codon terminates translation and is not included in the peptide.</li>
+          <li><strong>Sequence limits:</strong> Maximum 10,000 bases; longer sequences are rejected.</li>
           <li><strong>Base pairing:</strong> Standard Watson-Crick pairing (A-T/U, C-G) with no wobble or modified bases.</li>
         </ul>
       </div>
